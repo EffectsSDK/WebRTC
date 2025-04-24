@@ -1,16 +1,13 @@
 import os
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass
-import telegram
 
 GITHUB_TOKEN=os.environ.get("GITHUB_TOKEN")
-TELEGRAM_TOKEN=os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID=os.environ.get("TELEGRAM_CHAT_ID")
 
 @dataclass
-class NextReleaseResult:
+class ReleaseInfo:
     version: int
     releaseDate: datetime
     branch: str
@@ -22,28 +19,17 @@ class BuildMetadata:
     commit: str
     branch: str
 
-def getNextRelease():
-    # Get current version
-    releases = requests.get("https://api.github.com/repos/stasel/WebRTC/releases", headers={'Authorization': f"token {GITHUB_TOKEN}"}).json()
-    print(releases)
-    latestReleaseVersion = int(releases[0]["tag_name"].split(".")[0])
-    latestReleaseDate = datetime.fromisoformat(releases[0]["published_at"].replace("Z", ""))
-    print(f"Latest release: version {latestReleaseVersion}, date: {latestReleaseDate}")
-
+def getReleaseInfo(releaseVersion):
     # Get next version
-    nextReleaseVersion = latestReleaseVersion + 1
-    milestones = requests.get(f"https://chromiumdash.appspot.com/fetch_milestone_schedule?mstone={nextReleaseVersion}").json()
-    nextReleaseDate = datetime.fromisoformat(milestones["mstones"][0]["stable_date"])
-    print(f"Next release:   version {nextReleaseVersion}, date: {nextReleaseDate}")
+    milestones = requests.get(f"https://chromiumdash.appspot.com/fetch_milestone_schedule?mstone={releaseVersion}").json()
+    releaseDate = datetime.fromisoformat(milestones["mstones"][0]["stable_date"])
+    print(f"Release: version {releaseVersion}, date: {releaseVersion}")
 
     # Get next version branch
-    releases = requests.get(f"https://chromiumdash.appspot.com/fetch_milestones?mstone={nextReleaseVersion}").json()
-    nextReleaseBranch = "branch-heads/" + releases[0]["webrtc_branch"]
+    releases = requests.get(f"https://chromiumdash.appspot.com/fetch_milestones?mstone={releaseVersion}").json()
+    releaseBranch = "branch-heads/" + releases[0]["webrtc_branch"]
 
-    return NextReleaseResult(version = nextReleaseVersion, releaseDate = nextReleaseDate, branch = nextReleaseBranch)
-
-def isReleaseAvailable(release):
-    return datetime.today() >= (release.releaseDate + timedelta(days=1))
+    return ReleaseInfo(version = releaseVersion, releaseDate = releaseDate, branch = releaseBranch)
 
 def buildWebRTC(branch):
     os.environ["BUILD_VP9"] = "true"
@@ -72,7 +58,7 @@ def createReleaseDraft(release, buildMetadata):
         'body': body
     }
     headers = {'accept': 'application/vnd.github.v3+json', 'Authorization': f'token {GITHUB_TOKEN}'}
-    return requests.post("https://api.github.com/repos/stasel/WebRTC/releases", json = fields, headers = headers).json()
+    return requests.post("https://api.github.com/repos/EffectsSDK/WebRTC/releases", json = fields, headers = headers).json()
 
 def uploadReleaseAsset(url, assetLocalPath, assetName):
     url = url.replace(u'{?name,label}','')
@@ -94,7 +80,7 @@ def createPullRequest(release, head):
         'base': 'latest',
         'body': 'Created by an automated sotfware 🤖'
     }
-    response = requests.post("https://api.github.com/repos/stasel/WebRTC/pulls", json = body, headers = headers)
+    response = requests.post("https://api.github.com/repos/EffectsSDK/WebRTC/pulls", json = body, headers = headers)
     success = response.status_code == requests.codes.created
     if not success:
         print(response)
@@ -105,21 +91,14 @@ if __name__ == "__main__":
         print("❌ GITHUB_TOKEN environment variable is not provided")
         os._exit(os.EX_SOFTWARE)
 
-    # Get next release details
-    print("➡️ Fetching next release...")
-    nextRelease = getNextRelease()
+    releaseVersion = os.environ.get("WEBRTC_MILESTONE")
 
-    # Check if it is time for a new reelease
-    if not isReleaseAvailable(nextRelease):
-        print("ℹ️  Next version is not out yet. Skipping build")
-        os._exit(os.EX_OK)
-
-    print(f"✅ {nextRelease}\n")
-    print("✅ New Version is available to build")
+    print("➡️ Fetching release info...")
+    releaseInfo = getReleaseInfo(releaseVersion)
 
     # Build WebRTC Frameworks
     print("➡️ Building WebRTC Library...")
-    buildSuccess = buildWebRTC(nextRelease.branch)
+    buildSuccess = buildWebRTC(releaseInfo.branch)
     if not buildSuccess:
         print("❌ WebRTC Build Failed")
         os._exit(os.EX_SOFTWARE)
@@ -133,11 +112,11 @@ if __name__ == "__main__":
 
     # Create new release draft
     print("➡️ Creating new release draft...")
-    githubReleaseDraft = createReleaseDraft(nextRelease ,buildMetadata)
+    githubReleaseDraft = createReleaseDraft(releaseInfo, buildMetadata)
 
     # Upload asset to github
     print("➡️ Uploading asset to github...")
-    assetName = f"WebRTC-M{nextRelease.version}.xcframework.zip"
+    assetName = f"WebRTC-M{releaseInfo.version}.xcframework.zip"
     assetPath = os.path.join(outputDir, buildMetadata.filename)
     uploadURL = githubReleaseDraft['upload_url']
     uploadResult = uploadReleaseAsset(uploadURL, assetPath, assetName)
@@ -150,43 +129,27 @@ if __name__ == "__main__":
 
     # Create new branch with code changes
     print("➡️ Creating local branch...")
-    releaseBranch = f'release-M{nextRelease.version}'
+    releaseBranch = f'release-M{releaseInfo.version}'
     os.system(f'git checkout -b {releaseBranch}')
 
     # Change code
     print("➡️ Applying code changes...")
-    os.system(f"sed -i '' -E 's/[0-9]+.0.0\/WebRTC-M[0-9]+/{nextRelease.version}.0.0\/WebRTC-M{nextRelease.version}/g' Package.swift WebRTC-lib.podspec")
-    os.system(f"sed -i '' -E 's/checksum: \"[0-9a-f]+\"/checksum: \"{buildMetadata.checksum}\"/g' Package.swift WebRTC-lib.podspec ")
-    os.system(f"sed -i '' -E 's/.upToNextMajor\\(\"[0-9]+.0.0/.upToNextMajor\\(\"{nextRelease.version}.0.0/g' README.md")
-    os.system(f"sed -i '' -E 's/spec.version      = \"[0-9]+.0.0\"/spec.version      = \"{nextRelease.version}.0.0\"/g' WebRTC-lib.podspec")
-    cartageFile = open("WebRTC.json", 'r')
-
-    cartageJSON = json.loads(cartageFile.read())
-    cartageJSON[f'{nextRelease.version}.0.0'] = f'https://github.com/stasel/WebRTC/releases/download/{nextRelease.version}.0.0/WebRTC-M{nextRelease.version}.xcframework.zip'
-    cartageFile.close()
-    cartageJSONWrite = open("WebRTC.json", 'w')
-    cartageJSONWrite.write(json.dumps(cartageJSON, indent=4, sort_keys=True))
-    cartageJSONWrite.close()
+    os.system(f"sed -i '' -E 's/[0-9]+.0.0\/WebRTC-M[0-9]+/{releaseInfo.version}.0.0\/WebRTC-M{releaseInfo.version}/g' Package.swift ")
+    os.system(f"sed -i '' -E 's/checksum: \"[0-9a-f]+\"/checksum: \"{buildMetadata.checksum}\"/g' Package.swift ")
+    os.system(f"sed -i '' -E 's/.upToNextMajor\\(\"[0-9]+.0.0/.upToNextMajor\\(\"{releaseInfo.version}.0.0/g' README.md")
 
 
     # Commit and push
     print("➡️ Commiting and pushing code to remote...")
-    os.system(f'git add Package.swift WebRTC-lib.podspec README.md WebRTC.json')
-    os.system(f'git commit -m "Updated files for release M{nextRelease.version}"')
+    os.system(f'git add Package.swift README.md')
+    os.system(f'git commit -m "Updated files for release M{releaseInfo.version}"')
     os.system(f'git push origin {releaseBranch}')
 
     # Create PR
     print("➡️ Creating pull request...")
-    prResult = createPullRequest(nextRelease, releaseBranch)
+    prResult = createPullRequest(releaseInfo, releaseBranch)
     if not prResult:
         print("❌ Failed creating pull request in github")
         os._exit(os.EX_SOFTWARE)
-
-    # Notify about the new release via Telegram bot
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        print("➡️ Sending Telegram notification...")
-        bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        message = f"New WebRTC Release M{nextRelease.version} is now available.\nCheck the PR here: https://github.com/stasel/WebRTC/pulls"
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
     print(f"✅ Done")
