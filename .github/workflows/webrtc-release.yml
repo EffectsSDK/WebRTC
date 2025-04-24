@@ -2,13 +2,17 @@ name: WebRTC Release
 run-name: WebRTC Release
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 12 * * 3'
+    inputs:
+      webrtc_milestone:
+        description: 'WebRTC milestone number, example: 135. See https://chromiumdash.appspot.com/branches.'
+        required: true
+        type: number
 jobs:
   Build-Script:
     runs-on: macos-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WEBRTC_MILESTONE: ${{ inputs.webrtc_milestone }}
     steps:
       - name: Check out repository code
         uses: actions/checkout@v3
@@ -19,6 +23,6 @@ jobs:
       - name: Running WebRTC weekly release checks
         run: |
           sh clean.sh
-          pip install requests python-telegram-bot
+          pip install requests
           python -u scripts/release.py
     
