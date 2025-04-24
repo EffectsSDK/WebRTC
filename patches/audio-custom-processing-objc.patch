@@ -1,0 +1,412 @@
+diff --git a/sdk/BUILD.gn b/sdk/BUILD.gn
+index e76b68c92e..d7f7f269f8 100644
+--- a/sdk/BUILD.gn
++++ b/sdk/BUILD.gn
+@@ -96,6 +96,8 @@ if (is_ios || is_mac) {
+       "objc/base/RTCEncodedImage.h",
+       "objc/base/RTCEncodedImage.m",
+       "objc/base/RTCI420Buffer.h",
++      "objc/base/RTCAudioBufferView.h",
++      "objc/base/RTCAudioCustomProcessing.h",
+       "objc/base/RTCLogging.h",
+       "objc/base/RTCLogging.mm",
+       "objc/base/RTCMacros.h",
+@@ -539,6 +541,23 @@ if (is_ios || is_mac) {
+       }
+     }
+ 
++    rtc_library("objc_audio_custom_processing") {
++      visibility = [ "*" ]
++      allow_poison = [ "environment_construction" ]
++      sources = [
++        "objc/native/src/objc_audio_buffer.h",
++        "objc/native/src/objc_audio_buffer.mm",
++        "objc/native/src/objc_audio_custom_processing.h",
++        "objc/native/src/objc_audio_custom_processing.mm",
++      ]
++
++      deps = [
++        ":base_objc",
++        ":helpers_objc",
++        "../api/audio:audio_processing",
++      ]
++    }
++
+     rtc_library("videosource_objc") {
+       sources = [
+         "objc/api/peerconnection/RTCVideoSource+Private.h",
+@@ -1071,6 +1090,7 @@ if (is_ios || is_mac) {
+         ":mediasource_objc",
+         ":native_api",
+         ":native_video",
++        ":objc_audio_custom_processing",
+         ":objc_audio_device_module",
+         ":videoframebuffer_objc",
+         ":videorendereradapter_objc",
+@@ -1289,6 +1309,8 @@ if (is_ios || is_mac) {
+           "objc/base/RTCCodecSpecificInfo.h",
+           "objc/base/RTCEncodedImage.h",
+           "objc/base/RTCI420Buffer.h",
++          "objc/base/RTCAudioBufferView.h",
++          "objc/base/RTCAudioCustomProcessing.h",
+           "objc/base/RTCLogging.h",
+           "objc/base/RTCMacros.h",
+           "objc/base/RTCMutableI420Buffer.h",
+@@ -1493,6 +1515,8 @@ if (is_ios || is_mac) {
+           "objc/base/RTCCodecSpecificInfo.h",
+           "objc/base/RTCEncodedImage.h",
+           "objc/base/RTCI420Buffer.h",
++          "objc/base/RTCAudioBufferView.h",
++          "objc/base/RTCAudioCustomProcessing.h",
+           "objc/base/RTCLogging.h",
+           "objc/base/RTCMacros.h",
+           "objc/base/RTCMutableI420Buffer.h",
+diff --git a/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.h b/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.h
+index abfa679a1c..1c5c9f3e6e 100644
+--- a/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.h
++++ b/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.h
+@@ -34,6 +34,8 @@ NS_ASSUME_NONNULL_BEGIN
+ (RTCSSLCertificateVerifier);
+ @protocol RTC_OBJC_TYPE
+ (RTCAudioDevice);
++@protocol RTC_OBJC_TYPE
++(RTCAudioCustomProcessing);
+ 
+ RTC_OBJC_EXPORT
+ @interface RTC_OBJC_TYPE (RTCPeerConnectionFactory) : NSObject
+@@ -49,6 +51,17 @@ RTC_OBJC_EXPORT
+             decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)
+                                decoderFactory;
+ 
++/* Initialize object with injectable video encoder/decoder factories, custom capture post processing and default
++ * ADM */
++- (instancetype)
++    initWithEncoderFactory:
++        (nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
++            decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)
++                               decoderFactory
++               capturePostProcessing:
++                   (nullable id<RTC_OBJC_TYPE(RTCAudioCustomProcessing)>)capturePostProcessing;
++							   
++
+ /* Initialize object with injectable video encoder/decoder factories and
+  * injectable ADM */
+ - (instancetype)
+@@ -59,6 +72,19 @@ RTC_OBJC_EXPORT
+                audioDevice:
+                    (nullable id<RTC_OBJC_TYPE(RTCAudioDevice)>)audioDevice;
+ 
++
++/* Initialize object with injectable video encoder/decoder factories, custom capture post processing and
++ * injectable ADM */
++- (instancetype)
++	initWithEncoderFactory:
++		(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
++			decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)
++							   decoderFactory
++			   audioDevice:
++				   (nullable id<RTC_OBJC_TYPE(RTCAudioDevice)>)audioDevice
++				  capturePostProcessing:
++					  (nullable id<RTC_OBJC_TYPE(RTCAudioCustomProcessing)>)capturePostProcessing;
++
+ /**
+  * Valid kind values are kRTCMediaStreamTrackKindAudio and
+  * kRTCMediaStreamTrackKindVideo.
+diff --git a/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.mm b/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.mm
+index 79afe271da..52f668bc66 100644
+--- a/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.mm
++++ b/sdk/objc/api/peerconnection/RTCPeerConnectionFactory.mm
+@@ -22,6 +22,7 @@
+ #import "RTCPeerConnection+Private.h"
+ #import "RTCVideoSource+Private.h"
+ #import "RTCVideoTrack+Private.h"
++#import "base/RTCAudioCustomProcessing.h"
+ #import "base/RTCLogging.h"
+ #import "base/RTCVideoDecoderFactory.h"
+ #import "base/RTCVideoEncoderFactory.h"
+@@ -46,6 +47,7 @@
+ #include "sdk/objc/native/api/objc_audio_device_module.h"
+ #include "sdk/objc/native/api/video_decoder_factory.h"
+ #include "sdk/objc/native/api/video_encoder_factory.h"
++#include "sdk/objc/native/src/objc_audio_custom_processing.h"
+ #include "sdk/objc/native/src/objc_video_decoder_factory.h"
+ #include "sdk/objc/native/src/objc_video_encoder_factory.h"
+ 
+@@ -91,7 +93,33 @@ - (instancetype)init {
+                                decoderFactory {
+   return [self initWithEncoderFactory:encoderFactory
+                        decoderFactory:decoderFactory
+-                          audioDevice:nil];
++                          audioDevice:nil
++				capturePostProcessing:nil];
++}
++
++- (instancetype)
++	initWithEncoderFactory:
++		(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
++			decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)decoderFactory
++				capturePostProcessing:(nullable id<RTCAudioCustomProcessing>)capturePostProcessing {
++  return [self initWithEncoderFactory:encoderFactory
++					   decoderFactory:decoderFactory
++						  audioDevice:nil
++				capturePostProcessing:capturePostProcessing];
++}
++
++- (instancetype)
++	initWithEncoderFactory:
++		(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
++			decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)
++							   decoderFactory
++			   audioDevice:
++				   (nullable id<RTC_OBJC_TYPE(RTCAudioDevice)>)audioDevice {
++	return [self initWithEncoderFactory:encoderFactory
++						 decoderFactory:decoderFactory
++							audioDevice:audioDevice
++				  capturePostProcessing:nil];
++
+ }
+ 
+ - (instancetype)
+@@ -100,7 +128,9 @@ - (instancetype)init {
+             decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)
+                                decoderFactory
+                audioDevice:
+-                   (nullable id<RTC_OBJC_TYPE(RTCAudioDevice)>)audioDevice {
++                   (nullable id<RTC_OBJC_TYPE(RTCAudioDevice)>)audioDevice 
++					capturePostProcessing:
++						(nullable id<RTCAudioCustomProcessing>)capturePostProcessing {
+ #ifdef HAVE_NO_MEDIA
+   return [self initWithNoMedia];
+ #else
+@@ -122,6 +152,12 @@ - (instancetype)init {
+   } else {
+     dependencies.adm = [self audioDeviceModule];
+   }
++  if (capturePostProcessing) {
++	auto customProcessing = std::make_unique<webrtc::ObjCAudioCustomProcessing>(capturePostProcessing);
++	auto builder = std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
++	builder->SetCapturePostProcessing(std::move(customProcessing));
++	dependencies.audio_processing_builder = std::move(builder);		
++  }
+   return [self initWithMediaAndDependencies:std::move(dependencies)];
+ #endif
+ }
+diff --git a/sdk/objc/base/RTCAudioBufferView.h b/sdk/objc/base/RTCAudioBufferView.h
+new file mode 100644
+index 0000000000..f3c99a3597
+--- /dev/null
++++ b/sdk/objc/base/RTCAudioBufferView.h
+@@ -0,0 +1,29 @@
++/*
++ *  Copyright 2025 The Audio Effects SDK project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++#import <Foundation/Foundation.h>
++
++#import "sdk/objc/base/RTCMacros.h"
++
++NS_ASSUME_NONNULL_BEGIN
++
++RTC_OBJC_EXPORT
++@protocol RTC_OBJC_TYPE (RTCAudioBufferView)<NSObject>
++
++@property(nonatomic, readonly) size_t channels;
++@property(nonatomic, readonly) size_t frames;
++
++-(float*)channelAtIndex:(size_t)index;
++
++@end
++
++NS_ASSUME_NONNULL_END
++  
++ 
+diff --git a/sdk/objc/base/RTCAudioCustomProcessing.h b/sdk/objc/base/RTCAudioCustomProcessing.h
+new file mode 100644
+index 0000000000..87ce618081
+--- /dev/null
++++ b/sdk/objc/base/RTCAudioCustomProcessing.h
+@@ -0,0 +1,33 @@
++/*
++ *  Copyright 2025 The Audio Effects SDK project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++#import <Foundation/Foundation.h>
++
++#import "sdk/objc/base/RTCMacros.h"
++
++NS_ASSUME_NONNULL_BEGIN
++
++@protocol RTC_OBJC_TYPE (RTCAudioBufferView);
++
++RTC_OBJC_EXPORT
++@protocol RTC_OBJC_TYPE (RTCAudioCustomProcessing)<NSObject>
++
++-(void)setupWithSampleRateHz:(int)sampleRateHz channels:(int)channels
++NS_SWIFT_NAME(setup(sampleRateHz:channels:));
++
++/// The provided bufferView is only valid during the execution of this method.
++/// NO pointers to this bufferView must be retained beyond the scope of this method call.
++-(void)processAudioBufferView:(id<RTC_OBJC_TYPE(RTCAudioBufferView)>)bufferView
++NS_SWIFT_NAME(process(bufferView:));
++
++@end
++
++NS_ASSUME_NONNULL_END
++ 
+diff --git a/sdk/objc/native/src/objc_audio_buffer.h b/sdk/objc/native/src/objc_audio_buffer.h
+new file mode 100644
+index 0000000000..df574c51a9
+--- /dev/null
++++ b/sdk/objc/native/src/objc_audio_buffer.h
+@@ -0,0 +1,27 @@
++/*
++ *  Copyright (c) 2025 The Audio Effects SDK project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++#ifndef SDK_OBJC_NATIVE_SRC_OBJC_AUDIO_BUFFER_H_
++#define SDK_OBJC_NATIVE_SRC_OBJC_AUDIO_BUFFER_H_
++
++#include "api/audio/audio_processing.h"
++
++#import "base/RTCAudioBufferView.h"
++
++namespace webrtc { class AudioBuffer; }
++
++@interface RTC_OBJC_TYPE(ObjCAudioBufferWrapper) : NSObject<RTC_OBJC_TYPE(RTCAudioBufferView)>
++
++@property(nonatomic) webrtc::AudioBuffer* nativeAudioBuffer;
++
++@end
++
++#endif  // SDK_OBJC_NATIVE_SRC_OBJC_AUDIO_CUSTOM_PROCESSING_H_
++ 
+diff --git a/sdk/objc/native/src/objc_audio_buffer.mm b/sdk/objc/native/src/objc_audio_buffer.mm
+new file mode 100644
+index 0000000000..184ef30607
+--- /dev/null
++++ b/sdk/objc/native/src/objc_audio_buffer.mm
+@@ -0,0 +1,21 @@
++#import "objc_audio_buffer.h"
++
++#include "modules/audio_processing/audio_buffer.h"
++
++@implementation ObjCAudioBufferWrapper
++
++@synthesize nativeAudioBuffer = buffer_;
++
++-(size_t)channels {
++	return buffer_->num_channels();
++}
++
++-(size_t)frames {
++	return buffer_->num_frames();
++}
++
++-(float*)channelAtIndex:(size_t)index {
++	return buffer_->channels()[index];
++}
++
++@end
+diff --git a/sdk/objc/native/src/objc_audio_custom_processing.h b/sdk/objc/native/src/objc_audio_custom_processing.h
+new file mode 100644
+index 0000000000..01934e1de3
+--- /dev/null
++++ b/sdk/objc/native/src/objc_audio_custom_processing.h
+@@ -0,0 +1,43 @@
++/*
++ *  Copyright (c) 2025 The Audio Effects SDK project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++#ifndef SDK_OBJC_NATIVE_SRC_OBJC_AUDIO_CUSTOM_PROCESSING_H_
++#define SDK_OBJC_NATIVE_SRC_OBJC_AUDIO_CUSTOM_PROCESSING_H_
++
++#include "api/audio/audio_processing.h"
++
++#import "base/RTCAudioCustomProcessing.h"
++
++@class ObjCAudioBufferWrapper;
++
++namespace webrtc {
++
++class ObjCAudioCustomProcessing : public webrtc::CustomProcessing
++{
++public:
++	explicit ObjCAudioCustomProcessing(
++		id<RTC_OBJC_TYPE(RTCAudioCustomProcessing)> processing
++	);
++	
++	void Initialize(int sample_rate_hz, int num_channels) override;
++	
++	void Process(AudioBuffer *audio) override;
++	
++	std::string ToString() const override;
++	
++private:
++	__weak id<RTC_OBJC_TYPE(RTCAudioCustomProcessing)> processing_;
++	RTC_OBJC_TYPE(ObjCAudioBufferWrapper)* wrapper_;
++};
++
++}
++
++#endif  // SDK_OBJC_NATIVE_SRC_OBJC_AUDIO_CUSTOM_PROCESSING_H_
++ 
+diff --git a/sdk/objc/native/src/objc_audio_custom_processing.mm b/sdk/objc/native/src/objc_audio_custom_processing.mm
+new file mode 100644
+index 0000000000..59a98607aa
+--- /dev/null
++++ b/sdk/objc/native/src/objc_audio_custom_processing.mm
+@@ -0,0 +1,30 @@
++#include "objc_audio_custom_processing.h"
++
++#import "objc_audio_buffer.h"
++
++namespace webrtc {
++
++ObjCAudioCustomProcessing::ObjCAudioCustomProcessing(
++	id<RTC_OBJC_TYPE(RTCAudioCustomProcessing)> processing)
++	: processing_(processing)
++{ 
++	wrapper_ = [[RTC_OBJC_TYPE(ObjCAudioBufferWrapper) alloc] init];
++}
++
++void ObjCAudioCustomProcessing::Initialize(int sample_rate_hz, int num_channels)
++{
++	[processing_ setupWithSampleRateHz:sample_rate_hz channels:num_channels];
++}
++
++void ObjCAudioCustomProcessing::Process(AudioBuffer *audio)
++{
++	wrapper_.nativeAudioBuffer = audio;
++	[processing_ processAudioBufferView:wrapper_];
++}
++
++std::string ObjCAudioCustomProcessing::ToString() const
++{
++	return std::string();
++}
++
++}

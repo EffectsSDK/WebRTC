@@ -79,6 +79,7 @@ else
     cd ..
 fi
 export PATH=$(pwd)/depot_tools:$PATH
+export PATH=$(pwd)/depot_tools/python-bin:$PATH
 
 # Step 2 - Download and build WebRTC
 if [ ! -d src ]; then
@@ -90,6 +91,8 @@ git checkout $BRANCH
 cd ..
 gclient sync --with_branch_heads --with_tags
 cd src
+
+git apply ../patches/audio-custom-processing-objc.patch
 
 # Step 3 - Compile and build all frameworks
 rm -rf $OUTPUT_DIR  
