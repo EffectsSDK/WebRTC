@@ -23,5 +23,6 @@ jobs:
       - name: Running WebRTC weekly release checks
         run: |
           sh clean.sh
+          pip install requests
           python -u scripts/release.py
     
