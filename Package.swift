@@ -14,7 +14,7 @@ let package = Package(
         .binaryTarget(
             name: "WebRTC",
             url: "https://github.com/EffectsSDK/WebRTC/releases/download/135.0.0/WebRTC-M135.xcframework.zip",
-            checksum: "f33336c74d7a5d42a257b0aeca2315b50473c611b74f22dac7e41c38cbe84351"
+            checksum: "5a4fa89a3860c2e05cc98c62f1cc5901778ce856599014763dd05dfd9aa2b80a"
         ),
     ]
 )
